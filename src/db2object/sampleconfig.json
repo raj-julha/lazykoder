@@ -1,0 +1,25 @@
+{
+    "connectionString": "Server=localhost;Uid=raj;Pwd=***;database=setdbnamehere;",
+    "database": "setdbnamehere",
+    "assemblies": [
+        "assemblies\\MySQl.Data.dll"
+    ],
+    "query": {
+        "tableQuery": [
+            "SELECT Table_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS ",
+            "WHERE table_schema = '{{database}}' and table_name = '{{dbTable}}' ORDER BY table_name, ordinal_position; "
+        ],
+        "linksQuery": [
+            "SELECT @@version;"
+        ]
+    },
+    "namespace": "com.raj.model",
+    "dbTables": [
+        "country",
+        "country_group",
+        "currency",
+        "language",
+        "location",
+        "region"
+    ]
+}

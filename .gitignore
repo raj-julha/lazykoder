@@ -1,0 +1,10 @@
+#
+# live config, should not go into repo
+genconfig.json
+*.tmp
+*.dll
+.DS_Store
+*.log
+assemblies/
+tmp/
+
