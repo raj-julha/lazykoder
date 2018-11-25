@@ -1,0 +1,4 @@
+2018-11-24
+
+1. Add place holders during initial entity class generation in stage 1
+2. In stage 2 generate object and list properties for relations and then replace inside file generated in stage 1

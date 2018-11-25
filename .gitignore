@@ -1,6 +1,6 @@
 #
 # live config, should not go into repo
-genconfig.json
+genconfig*.json
 *.tmp
 *.dll
 .DS_Store

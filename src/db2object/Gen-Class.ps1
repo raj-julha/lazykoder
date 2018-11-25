@@ -7,6 +7,9 @@
  a programming language class per table. In the first instance it will generate
  java classes but it should support other languages in future
 
+ Download mysql connector for .NET from https://dev.mysql.com/downloads/connector/net/8.0.html 
+ Development of this script was performed using mysql-connector-net-8.0.13.msi
+
 .NOTES
  Date Created: 2018-11-17
  Author: Raj Julha
@@ -15,7 +18,8 @@
 
 [CmdletBinding()]
 Param(
-    [string]$cfgfile = ".\genconfig.json" # TODO: Add validation on existence of config file
+    [string]$cfgfile = ".\genconfig.json", # TODO: Add validation on existence of config file
+    [switch]$SaveQueryResult = $false
 )
    # $currentScriptDirectory = Get-Location
    # [System.IO.Directory]::SetCurrentDirectory($currentScriptDirectory.Path)
@@ -29,54 +33,82 @@ $config.assemblies | ForEach-Object {
 }
 
 # START OF JAVA GENERATATION Functions 
-# Will be moved to external class
+# Will be moved to external class or
+# a powershell PSM module
 
 class JavaGenerator 
 {
     $DbTypeToLanguageMap = @{
         bigint = 'Long'
         bit = 'Boolean'
-        blob = 'Undefined'
-        char = 'char'
+        blob = 'String'
+        char = 'String'
         date = 'Date'
-        datetime = 'DateTime'
+        datetime = 'Date'
         decimal = 'Double'
         double = 'Double'
         enum = ''
         float = 'Float'
         int = 'Integer'
-        longblob = ''
+        longblob = 'String'
         longtext = 'String'
         mediumtext = 'String'
         set = ''
         smallint = 'Integer'
         text = 'String'
-        time = ''
-        timestamp = ''
+        time = 'Timstamp'
+        timestamp = 'Timstamp'
         tinyint = 'Integer'
         tinytext = 'String'
-        varbinary = ''
+        varbinary = 'Byte'
         varchar = 'String'
     }
 
 
-    $DbFieldName
-    $DbFieldType
-    $LangFieldName
-    $LanFieldType
-    $PascalName
+    [string]$DbFieldName
+    [string]$DbFieldType
+    [string]$LangFieldName
+    [string]$LanFieldType
+    [string]$PascalName
+    [string]$PropertyType
+
+    # Note: Contrary to C# we cannot have constructor chaining using this(), this(x) etc.
+    # See stackoverflow link for workaround
+    # See https://blogs.technet.microsoft.com/heyscriptingguy/2015/09/09/powershell-5-classes-constructor-overloading/
+    # https://stackoverflow.com/questions/44413206/constructor-chaining-in-powershell-call-other-constructors-in-the-same-class
+
+    # Hidden, chained helper methods that the constructors must call.
+    hidden Init([string]$DbFieldName) { $this.Init($DbFieldName, "varchar", "default")}    # We can also use $null for empty args
+    hidden Init([string]$DbFieldName, [string]$DbFieldType) { $this.Init($DbFieldName, $DbFieldType, "default")}
+    hidden Init([string]$DbFieldName, [string]$DbFieldType, $PropertyType) 
+    {
+
+        $this.DbFieldName = $DbFieldName
+        $this.DbFieldType = $DbFieldType
+        $this.PropertyType = $PropertyType
+        $this.LangFieldName = $this.ConvertSnakeCaseToCamelCase($this.DbFieldName) #  ($this.DbFieldName -replace "_", "").ToLower()
+        $this.PascalName = $this.ConvertToPascalCase($this.LangFieldName)
+        $this.LanFieldType = $this.DbTypeToLanguageMap[$this.DbFieldType]
+        
+    }
 
     JavaGenerator()
     {}
 
     JavaGenerator($DbFieldName, $DbFieldType)
     {
-        $this.DbFieldName = $DbFieldName
-        $this.DbFieldType = $DbFieldType
-        $this.LangFieldName = $this.ConvertSnakeCaseToCamelCase($this.DbFieldName) #  ($this.DbFieldName -replace "_", "").ToLower()
-        $this.PascalName = $this.ConvertToPascalCase($this.LangFieldName)
-        $this.LanFieldType = $this.DbTypeToLanguageMap[$this.DbFieldType]
+        $this.Init($DbFieldName, $DbFieldType)
     }
+
+    <#
+    PropertyType can be Object or List. 
+    TODO: See how we can use enums
+    #>
+    JavaGenerator($DbFieldName, $DbFieldType, $PropertyType)
+    {
+        $this.Init($DbFieldName, $DbFieldType, $PropertyType)    
+    }
+
 
     [string]ConvertToPascalCase($InputStr)
     {
@@ -100,8 +132,21 @@ class JavaGenerator
     }
 
     [string]getPrivateLineDefinition()
-    {        
-        $PrivateLine = "    private $($this.LanFieldType) $($this.LangFieldName); // DBField: $($this.DbFieldName) $($this.DbFieldType)" 
+    {   
+        $PrivateLine = ""     
+        if($this.PropertyType -eq "default"){
+            $PrivateLine = "    private $($this.LanFieldType) $($this.LangFieldName); // DBField: $($this.DbFieldName) $($this.DbFieldType)" 
+        }
+        elseif ($this.PropertyType -eq "Entity") {
+            $PrivateLine = "    private $($this.PascalName) $($this.LangFieldName); "
+        }
+        elseif ($this.PropertyType -eq "List") {
+            $PrivateLine = "    private List<$($this.PascalName)> $($this.LangFieldName)s; "
+        }
+        else{
+            $PrivateLine = "    private $($this.LanFieldType) $($this.LangFieldName); // DBField: $($this.DbFieldName) $($this.DbFieldType)" 
+        }
+
 
         return $PrivateLine 
     }
@@ -123,7 +168,7 @@ class JavaGenerator
     [string]getSetterLine()
     {
         $SetterLine = @()
-        $SetterLine += "    public set$($this.PascalName)($($this.LanFieldType) $($this.LangFieldName)) {"
+        $SetterLine += "    public void set$($this.PascalName)($($this.LanFieldType) $($this.LangFieldName)) {"
         $SetterLine += "        this.$($this.LangFieldName) = $($this.LangFieldName); // " + $this.DbFieldName
         $SetterLine += "    }"
         <#
@@ -135,12 +180,134 @@ class JavaGenerator
         return  ($SetterLine -join "`r`n") #  ($SetterLine -join "`r`n")  # Note the backtick
     }
 
+
+    # TODO: Expose a single GetGetterLine method with argument and then call specific ones like this one
+    [string]getObjectGetterLine()
+    {
+        $GetterLine = @()
+        $GetterLine += "    public $($this.PascalName) get$($this.PascalName)() {"
+        $GetterLine += "        return this.$($this.LangFieldName); // " + $this.DbFieldName
+        $GetterLine += "    }"
+
+        <#
+
+            public BatchItem getBatchItem() {
+                return this.batchItem;
+            }
+            
+        #>
+
+        return  ($GetterLine -join "`r`n") #  Note the backtick
+    }
+
+    [string]getObjectSetterLine()
+    {
+        $SetterLine = @()
+        $SetterLine += "    public void set$($this.PascalName)($($this.PascalName) $($this.LangFieldName)) {"
+        $SetterLine += "        this.$($this.LangFieldName) = $($this.LangFieldName); // " + $this.DbFieldName
+        $SetterLine += "    }"
+
+        <#
+            public void setBatchItem(BatchItem batchItem) {
+                this.batchItem = batchItem;
+            }
+        #>
+        return  ($SetterLine -join "`r`n") #  ($SetterLine -join "`r`n")  # Note the backtick
+    }
+
+    [string]getListGetterLine()
+    {
+        $GetterLine = @()
+        $GetterLine += "    public List<$($this.PascalName)> get$($this.PascalName)s() {"
+        $GetterLine += "        return this.$($this.LangFieldName)s; // " + $this.DbFieldName
+        $GetterLine += "    }"
+        <#
+            public List<RefObject> getRefObjects() {
+                return this.refObjects;
+            }
+
+            Must have this in variables definitions
+            private List<RefObject> refObjects = new HashSet<RefObject>(0);
+        #>
+        return  ($GetterLine -join "`r`n") #  Note the backtick
+    }
+
+    [string]getListSetterLine()
+    {
+        $SetterLine = @()
+        $SetterLine += "    public set$($this.PascalName)s(List<$($this.PascalName)> $($this.LangFieldName)s) {"
+        $SetterLine += "        this.$($this.LangFieldName)s = $($this.LangFieldName)s; // " + $this.DbFieldName
+        $SetterLine += "    }"
+        <#
+            public void setBatchItems(Set<BatchItem> batchItems) {
+                this.batchItems = batchItems;
+            }
+
+        #>
+
+        return  ($SetterLine -join "`r`n") #  ($SetterLine -join "`r`n")  # Note the backtick
+    }
+
+
     [String]ToString()
     {
         return $this.DbFieldName + "," + $this.DbFieldType
     }
 }
 # END OF JAVA CLASS GENERATOR
+
+# BEGIN RELATIONSHIP GENERATOR
+class EntityRelationGenerator {
+    $RelationShipMap
+    $PrivateItems
+    $GetterSetterItems # Check how we can indicate it is an array
+    [string]$PrivatePropText
+
+    EntityRelationGenerator() {}
+
+    hidden GenerateCode(){
+        # $myRel.RelationShipMap | Where-Object {$_.PropertyType -eq "List"}
+        #  |
+        $this.PrivateItems = @()
+        $this.GetterSetterItems = @()
+
+        $Props = @()
+        $this.RelationShipMap | Where-Object {$_.ForeignObject -ne ""} | ForEach-Object {
+                # $Props += ($_.ForeignObject  + " xyz")
+
+                $obj1 = [JavaGenerator]::new($_.ForeignObject, "varchar", $_.PropertyType)
+                $Props += $obj1
+
+            }
+
+        $Props | ForEach-Object {
+            # $_.PropertyType
+            $this.PrivateItems += $_.getPrivateLineDefinition()
+            $this.GetterSetterItems += $_.getObjectGetterLine()
+            $this.GetterSetterItems += $_.getObjectSetterLine()
+
+        }          
+        # $this.PrivatePropText = $Props -join "|"
+    }
+    EntityRelationGenerator([string]$RelationMapJsonString){
+        $this.RelationShipMap = ($RelationMapJsonString | ConvertFrom-Json) # | ConvertFrom-Json
+        $this.GenerateCode()
+    }
+
+
+    [string]GetPrivateDefinitions()
+    {
+        # //$RelationShipMap
+        # $ts1 = @()
+        # $this.RelationShipMap | Where-Object {$_.PropertyType -eq "Entity"} | ForEach-Object {$ts1 += $_.ForeignObject }
+        # return "private " + ($ts1 -join "|"  )
+        return $this.PrivatePropText
+
+    }
+}
+
+
+# END RELATIONSHIP GENERATOR
 
 <#
 .SYNOPSIS
@@ -202,11 +369,17 @@ Function New-Class
     END {
         $FieldItems | ForEach-Object { $ClassLines += $_.getPrivateLineDefinition() }
         $ClassLines += "" 
+        $ClassLines += "// --- OBJECTDEFINITIONPLACEHOLDER ---" 
+        $ClassLines += "" 
         $FieldItems | ForEach-Object { 
                 $ClassLines += $_.getGetterLine()
                 $ClassLines += $_.getSetterLine() 
             }
-              
+
+        $ClassLines += "" 
+        ## Another step will replace this with block of text which should be preceeded anf followed by newlines
+        $ClassLines += "// --- OBJECTMETHODPLACEHOLDER ---"  
+        $ClassLines += "" 
         $ClassLines += "}"
         Write-Verbose "Closing Class name: $Outfile"
         $classText = ($ClassLines -join "`r`n")
@@ -270,7 +443,7 @@ Function Get-SqlData{
     }    
 }
 
-$ConnectionString = $config.connectionString #   "Server=localhost;Uid=raj;Pwd=julha;database=idefix;"
+$ConnectionString = $config.connectionString #   "Server=localhost;Uid=raj;Pwd=xyz;database=mydbname;"
 # $Query = "SELECT @@Version"
 
 $config.dbTables | ForEach-Object {
@@ -278,34 +451,41 @@ $config.dbTables | ForEach-Object {
     $TmpQuery1 = $config.query.tableQuery -join " " -replace "{{database}}", $config.database 
     $TmpQuery1 = $TmpQuery1 -replace "{{dbTable}}", $_
 
-    $TmpQuery2 = $config.query.linksQuery -join " "
+    $TmpQuery2 = $config.query.linksQuery -join " " -replace "{{database}}", $config.database 
+    $TmpQuery2 = $TmpQuery2 -replace "{{dbTable}}", $_
+
     $Query = $TmpQuery1 + " " + $TmpQuery2
 
     Write-Verbose $Query
 
     $data, $data1 = Get-SqlData -ConnectionString $ConnectionString -Query $Query 
-    $data
+    if($SaveQueryResult){
+        $cfgFilenameOnly = $_ + "-" + [System.IO.Path]::GetFileNameWithoutExtension($cfgfile)
+        $outData1 = (Join-Path -Path $config.outputLocation -ChildPath ("$($cfgFilenameOnly)_1.csv"))
+        $outData2 = (Join-Path -Path $config.outputLocation -ChildPath ("$($cfgFilenameOnly)_2.csv"))
+        $data | Export-Csv -Path $outData1 -NoTypeInformation
+
+        $data1 | Export-Csv -Path $outData2 -NoTypeInformation
+    }
+    # https://stackoverflow.com/questions/20688860/how-to-convert-datatable-to-json-using-convertto-json-in-powershell-v3
+    # We want to convert the DataTable object type into a JSO string so that we pass it around 
+    # without any dependency of this object as well as to reduce its unnecessary properties for our use
+    $EntityRelation = ($data1 | Select-Object $data1.columns.columnname) |  ConvertTo-Json 
     
+    $myRel = [EntityRelationGenerator]::new($EntityRelation) # Check if $EntityRelation is a string representation of a JSON object or a JSON object
+    # $myRel.RelationShipMap | Where-Object {$_.PropertyType -eq "List"}
+    # $myRel.GetPrivateDefinitions()
+    $myRel.PrivateItems
+    $myRel.GetterSetterItems
     # $data1 # Build a lookup object or pass the datatable itself for foreign key creation
-    # $data | New-Class -OutputLocation "E:\junk" -EntityName "$_" -Namespace $config.namespace
+    $data | New-Class -OutputLocation $config.outputLocation -EntityName "$_" -Namespace $config.namespace
 }
 
+$obj1 = [JavaGenerator]::new("batch_item", "varchar", "List")
+$obj1.PropertyType
+$obj1.getObjectGetterLine()
+$obj1.getObjectSetterLine()
 
-# Get a list of distinct TABLE_NAME values from dataset and then build a filter for each
-# $data | New-Class -OutputLocation "E:\junk" -EntityName "Country" -Namespace $config.namespace
+$obj1.getListGetterLine()
+$obj1.getListSetterLine()
 
-$QueryTemp = @"
-SELECT Table_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS
-WHERE table_schema = 'mydbname' and table_name = '$_' ORDER BY table_name, ordinal_position;
-
-SELECT T.* FROM 
-(SELECT A.Table_Name AS ContainerObject, REPLACE(F.REF_NAME,'mydbname/', '') AS ForeignObject, 'Object' AS PropertyType  FROM information_schema.TABLES A
-LEFT OUTER JOIN information_schema.`INNODB_SYS_FOREIGN` F ON (A.TABLE_NAME = REPLACE(F.FOR_NAME,'mydbname/', ''))
-WHERE A.table_schema = 'mydbname'  and table_name = '$_'
-UNION
-SELECT A.Table_Name AS ContainerObject, REPLACE(F2.FOR_NAME, 'mydbname/', '') AS ForeignObject, 'List' AS ProperTyType FROM information_schema.TABLES A
-LEFT OUTER JOIN information_schema.`INNODB_SYS_FOREIGN` F2 ON (A.TABLE_NAME = REPLACE(F2.REF_NAME,'mydbname/', ''))
-WHERE A.table_schema = 'mydbname' and table_name = '$_' ) AS T
-ORDER BY T.ContainerObject
-
-"@

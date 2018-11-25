@@ -14,6 +14,7 @@
         ]
     },
     "namespace": "com.raj.model",
+    "outputLocation": "e:\\junk",
     "dbTables": [
         "country",
         "country_group",
