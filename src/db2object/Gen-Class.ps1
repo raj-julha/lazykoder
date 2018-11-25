@@ -18,7 +18,15 @@
 
 [CmdletBinding()]
 Param(
-    [string]$cfgfile = ".\genconfig.json", # TODO: Add validation on existence of config file
+    [ValidateScript({
+        If(Test-Path $_ -PathType Leaf){             
+            $true
+        } Else {
+
+            Throw "Configuration file $_ does not  exist or is not accessible"
+        }
+    })]    
+    [string]$cfgfile = ".\genconfig.json", 
     [switch]$SaveQueryResult = $false
 )
    # $currentScriptDirectory = Get-Location
@@ -64,7 +72,6 @@ class JavaGenerator
         varchar = 'String'
     }
 
-
     [string]$DbFieldName
     [string]$DbFieldType
     [string]$LangFieldName
@@ -82,18 +89,15 @@ class JavaGenerator
     hidden Init([string]$DbFieldName, [string]$DbFieldType) { $this.Init($DbFieldName, $DbFieldType, "default")}
     hidden Init([string]$DbFieldName, [string]$DbFieldType, $PropertyType) 
     {
-
         $this.DbFieldName = $DbFieldName
         $this.DbFieldType = $DbFieldType
         $this.PropertyType = $PropertyType
         $this.LangFieldName = $this.ConvertSnakeCaseToCamelCase($this.DbFieldName) #  ($this.DbFieldName -replace "_", "").ToLower()
         $this.PascalName = $this.ConvertToPascalCase($this.LangFieldName)
-        $this.LanFieldType = $this.DbTypeToLanguageMap[$this.DbFieldType]
-        
+        $this.LanFieldType = $this.DbTypeToLanguageMap[$this.DbFieldType]        
     }
 
-    JavaGenerator()
-    {}
+    JavaGenerator(){}
 
     JavaGenerator($DbFieldName, $DbFieldType)
     {
@@ -108,7 +112,6 @@ class JavaGenerator
     {
         $this.Init($DbFieldName, $DbFieldType, $PropertyType)    
     }
-
 
     [string]ConvertToPascalCase($InputStr)
     {
@@ -190,13 +193,10 @@ class JavaGenerator
         $GetterLine += "    }"
 
         <#
-
             public BatchItem getBatchItem() {
                 return this.batchItem;
-            }
-            
+            }            
         #>
-
         return  ($GetterLine -join "`r`n") #  Note the backtick
     }
 
@@ -248,7 +248,6 @@ class JavaGenerator
         return  ($SetterLine -join "`r`n") #  ($SetterLine -join "`r`n")  # Note the backtick
     }
 
-
     [String]ToString()
     {
         return $this.DbFieldName + "," + $this.DbFieldType
@@ -259,29 +258,31 @@ class JavaGenerator
 # BEGIN RELATIONSHIP GENERATOR
 class EntityRelationGenerator {
     $RelationShipMap
-    $PrivateItems
-    $GetterSetterItems # Check how we can indicate it is an array
+    [string[]]$PrivateItems
+    [string[]]$GetterSetterItems # Check how we can indicate it is an array
     [string]$PrivatePropText
 
     EntityRelationGenerator() {}
 
     hidden GenerateCode(){
-        # $myRel.RelationShipMap | Where-Object {$_.PropertyType -eq "List"}
-        #  |
+
         $this.PrivateItems = @()
         $this.GetterSetterItems = @()
 
-        $Props = @()
-        $this.RelationShipMap | Where-Object {$_.ForeignObject -ne ""} | ForEach-Object {
-                # $Props += ($_.ForeignObject  + " xyz")
+        # NOTE: The JSON string received by this class is the result of
+        #       a DataTable object exported as JSON string using a statement like below
+        #       $EntityRelation = ($data1 | Select-Object $data1.columns.columnname) |  ConvertTo-Json 
+        #       The behaviour of empty string and $null doesn't seem to be consistent and
+        #       testing for "" doesn't work so we test for both $null and ""
 
+        $Props = @()
+        $this.RelationShipMap | Where-Object {($null -ne $_.ForeignObject) -or ($_.ForeignObject -eq "") } | ForEach-Object {                
+                # check why filter on -ne "" is not working
                 $obj1 = [JavaGenerator]::new($_.ForeignObject, "varchar", $_.PropertyType)
                 $Props += $obj1
-
             }
 
-        $Props | ForEach-Object {
-            # $_.PropertyType
+        $Props | ForEach-Object {            
             $this.PrivateItems += $_.getPrivateLineDefinition()
             $this.GetterSetterItems += $_.getObjectGetterLine()
             $this.GetterSetterItems += $_.getObjectSetterLine()
@@ -289,23 +290,13 @@ class EntityRelationGenerator {
         }          
         # $this.PrivatePropText = $Props -join "|"
     }
+
     EntityRelationGenerator([string]$RelationMapJsonString){
         $this.RelationShipMap = ($RelationMapJsonString | ConvertFrom-Json) # | ConvertFrom-Json
         $this.GenerateCode()
     }
 
-
-    [string]GetPrivateDefinitions()
-    {
-        # //$RelationShipMap
-        # $ts1 = @()
-        # $this.RelationShipMap | Where-Object {$_.PropertyType -eq "Entity"} | ForEach-Object {$ts1 += $_.ForeignObject }
-        # return "private " + ($ts1 -join "|"  )
-        return $this.PrivatePropText
-
-    }
 }
-
 
 # END RELATIONSHIP GENERATOR
 
@@ -319,14 +310,19 @@ class EntityRelationGenerator {
  A .NET DataRow object containing fieldname and type. This would normally be from a query of INFORMATION_SCHEMA.COLUMNS
  table
 
-.PARAMETER EntityName 
- The table name for which a an entity class is to be generated
-
 .PARAMETER OutputLocation
+ A folder location where the classes will be written to
 
 .PARAMETER EntityName
+ The physical name of the table for which a class is to be generated.
+ It will usually be something like this_is_my_table
+ The class will internally generate the Pascal case of the entity name
 
 .PARAMETER Namespace
+ The value to be used in the package statement in first line of generated class
+
+.PARAMETER RelationGenerator
+ An object that contains all relationships for the current entity
 
 #>
 Function New-Class
@@ -337,7 +333,8 @@ Function New-Class
         $DbRow,
         [string]$OutputLocation,
         [string]$EntityName,
-        [string]$Namespace
+        [string]$Namespace,
+        [EntityRelationGenerator]$RelationGenerator
     )
 
     BEGIN {
@@ -370,6 +367,8 @@ Function New-Class
         $FieldItems | ForEach-Object { $ClassLines += $_.getPrivateLineDefinition() }
         $ClassLines += "" 
         $ClassLines += "// --- OBJECTDEFINITIONPLACEHOLDER ---" 
+        $RelationGenerator.PrivateItems | ForEach-Object { $ClassLines += $_ }
+        
         $ClassLines += "" 
         $FieldItems | ForEach-Object { 
                 $ClassLines += $_.getGetterLine()
@@ -377,8 +376,9 @@ Function New-Class
             }
 
         $ClassLines += "" 
-        ## Another step will replace this with block of text which should be preceeded anf followed by newlines
+        
         $ClassLines += "// --- OBJECTMETHODPLACEHOLDER ---"  
+        $RelationGenerator.GetterSetterItems | ForEach-Object { $ClassLines += $_ }
         $ClassLines += "" 
         $ClassLines += "}"
         Write-Verbose "Closing Class name: $Outfile"
@@ -416,9 +416,8 @@ Function Get-SqlData{
         $connection.ConnectionString = $ConnectionString
         Write-Verbose "Open Database Connection"
         $connection.Open()
-        
-        
-        Write-Verbose "Run MySQL Querys"
+                
+        Write-Verbose "Run MySQL Queries"
         $command = New-Object MySql.Data.MySqlClient.MySqlCommand($query, $connection)
         $dataAdapter = New-Object MySql.Data.MySqlClient.MySqlDataAdapter($command)
         $dataSet = New-Object System.Data.DataSet
@@ -429,7 +428,7 @@ Function Get-SqlData{
         # $dataSet.Tables | Select-Object TableName 
         $tbl1 = $dataSet.Tables[0].TableName
         $tbl2 = $dataSet.Tables[1].TableName
-        Write-Verbose "datatables: $tbl1, $tbl2 " # data, data1
+        Write-Verbose "datatables: $tbl1, $tbl2 " # 
         # $dataSet.Tables["data"]  #| Format-Table
         # Return 2 datatables
         $dataSet.Tables["data"], $dataSet.Tables["data1"]  #| Format-Table  #| Format-Table
@@ -443,11 +442,30 @@ Function Get-SqlData{
     }    
 }
 
+# ------------------ MAIN EXECUTION STARTS HERE ----------------------#
+
+If(Test-Path -Path $config.outputLocation -PathType Container)
+{
+    $OutputLocation = Join-Path -Path $config.outputLocation -ChildPath ((get-date).ToString("yyyyMMdd_HHmmss"))
+    New-Item -Path $OutputLocation -ItemType Container  | Out-Null
+    If($SaveQueryResult){
+        $MapsOutputLocation = Join-Path -Path $OutputLocation -ChildPath "Maps"
+        New-Item -Path $MapsOutputLocation -ItemType Container  | Out-Null    
+    }
+}
+else{
+    throw "Output location $($config.outputLocation) does not exist"
+}
+# 
+
 $ConnectionString = $config.connectionString #   "Server=localhost;Uid=raj;Pwd=xyz;database=mydbname;"
 # $Query = "SELECT @@Version"
 
-$config.dbTables | ForEach-Object {
+# Loop through each db table listed inside config file and generate corresponding Entity class
+# If SaveQueryResult switch is set we generate two CSV files per table, one for column names
+# and one for relations
 
+$config.dbTables | ForEach-Object {
     $TmpQuery1 = $config.query.tableQuery -join " " -replace "{{database}}", $config.database 
     $TmpQuery1 = $TmpQuery1 -replace "{{dbTable}}", $_
 
@@ -459,10 +477,11 @@ $config.dbTables | ForEach-Object {
     Write-Verbose $Query
 
     $data, $data1 = Get-SqlData -ConnectionString $ConnectionString -Query $Query 
+
     if($SaveQueryResult){
         $cfgFilenameOnly = $_ + "-" + [System.IO.Path]::GetFileNameWithoutExtension($cfgfile)
-        $outData1 = (Join-Path -Path $config.outputLocation -ChildPath ("$($cfgFilenameOnly)_1.csv"))
-        $outData2 = (Join-Path -Path $config.outputLocation -ChildPath ("$($cfgFilenameOnly)_2.csv"))
+        $outData1 = (Join-Path -Path $MapsOutputLocation -ChildPath ("$($cfgFilenameOnly)_1.csv"))
+        $outData2 = (Join-Path -Path $MapsOutputLocation -ChildPath ("$($cfgFilenameOnly)_2.csv"))
         $data | Export-Csv -Path $outData1 -NoTypeInformation
 
         $data1 | Export-Csv -Path $outData2 -NoTypeInformation
@@ -471,21 +490,10 @@ $config.dbTables | ForEach-Object {
     # We want to convert the DataTable object type into a JSO string so that we pass it around 
     # without any dependency of this object as well as to reduce its unnecessary properties for our use
     $EntityRelation = ($data1 | Select-Object $data1.columns.columnname) |  ConvertTo-Json 
+    # $_
     
     $myRel = [EntityRelationGenerator]::new($EntityRelation) # Check if $EntityRelation is a string representation of a JSON object or a JSON object
-    # $myRel.RelationShipMap | Where-Object {$_.PropertyType -eq "List"}
-    # $myRel.GetPrivateDefinitions()
-    $myRel.PrivateItems
-    $myRel.GetterSetterItems
+
     # $data1 # Build a lookup object or pass the datatable itself for foreign key creation
-    $data | New-Class -OutputLocation $config.outputLocation -EntityName "$_" -Namespace $config.namespace
+    $data | New-Class -OutputLocation $OutputLocation -EntityName "$_" -Namespace $config.namespace -RelationGenerator $myRel
 }
-
-$obj1 = [JavaGenerator]::new("batch_item", "varchar", "List")
-$obj1.PropertyType
-$obj1.getObjectGetterLine()
-$obj1.getObjectSetterLine()
-
-$obj1.getListGetterLine()
-$obj1.getListSetterLine()
-
